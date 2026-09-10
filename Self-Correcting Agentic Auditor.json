@@ -1,0 +1,370 @@
+{
+  "name": "Self-Correcting Agentic Auditor",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "31a4b27b-ebe9-42f7-bb51-1a81b96759d9",
+      "name": "Run Audit",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic mock transaction dataset (no randomness)\nconst transactions = [\n  // #1 TXN-001 — Completely valid transaction (should pass immediately)\n  { transaction_id: 'TXN-001', customer_id: 'CUST-1001', amount: 250.00, currency: 'USD', transaction_date: '2026-09-01', transaction_type: 'purchase', status: 'completed' },\n  // #2 TXN-002 — Missing required field (customer_id) -> uncorrectable\n  { transaction_id: 'TXN-002', amount: 99.99, currency: 'EUR', transaction_date: '2026-09-02', transaction_type: 'refund', status: 'pending' },\n  // #3 TXN-003 — Invalid currency (\"usd\") -> correctable to \"USD\"\n  { transaction_id: 'TXN-003', customer_id: 'CUST-1003', amount: 40.50, currency: 'usd', transaction_date: '2026-09-03', transaction_type: 'purchase', status: 'completed' },\n  // #4 TXN-004 — Invalid amount (negative) -> uncorrectable\n  { transaction_id: 'TXN-004', customer_id: 'CUST-1004', amount: -75.00, currency: 'GBP', transaction_date: '2026-09-04', transaction_type: 'withdrawal', status: 'completed' },\n  // #5 TXN-005 — Invalid status (\"done\") -> correctable to \"completed\"\n  { transaction_id: 'TXN-005', customer_id: 'CUST-1005', amount: 500.00, currency: 'INR', transaction_date: '2026-09-05', transaction_type: 'transfer', status: 'done' },\n  // #6 TXN-006 — Invalid date format (\"09/06/2026\") -> correctable to \"2026-09-06\"\n  { transaction_id: 'TXN-006', customer_id: 'CUST-1006', amount: 12.00, currency: 'JPY', transaction_date: '09/06/2026', transaction_type: 'deposit', status: 'pending' },\n  // #7 TXN-007 — Multiple errors: lowercase currency + status casing (both correctable)\n  { transaction_id: 'TXN-007', customer_id: 'CUST-1007', amount: 320.00, currency: 'eur', transaction_date: '2026-09-07', transaction_type: 'purchase', status: 'Completed' },\n  // #8 TXN-008 — Uncorrectable: invalid transaction_type + missing amount\n  { transaction_id: 'TXN-008', customer_id: 'CUST-1008', currency: 'USD', transaction_date: '2026-09-08', transaction_type: 'quantum_teleport', status: 'completed' },\n];\n\nreturn transactions.map((t) => ({ json: t }));"
+      },
+      "id": "0cd449f7-9561-461c-a93c-c156be9ed3b9",
+      "name": "Mock Transaction Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        112
+      ],
+      "notes": "Deterministic mock transactions for the LMS demo. Contains valid, correctable and uncorrectable records. Each item = one transaction fed to the Auditor Agent."
+    },
+    {
+      "parameters": {},
+      "id": "b746304a-97da-4aaf-8c67-67ea2ba28066",
+      "name": "All Transactions Audited",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        576,
+        -192
+      ],
+      "notes": "Terminal node reached after every transaction has been processed through the loop."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Audit the following transaction record. Original transaction JSON:\n{{ JSON.stringify($json) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a Transaction Audit and Self-Correction Agent.\n\nYour responsibility is to audit transaction records against the validation rules.\n\nYou MUST validate the transaction using the provided tool \"validate_transaction\". Pass the full transaction object to it as a JSON string. Never assume that a transaction is valid without calling this tool — the tool result is the ONLY source of truth for validity.\n\nVALIDATION RULES (as enforced by the tool):\n- Required fields: transaction_id, customer_id, amount, currency, transaction_date, transaction_type, status.\n- amount: a number greater than zero.\n- currency: one of USD, EUR, GBP, INR, JPY (uppercase, exact).\n- transaction_type: one of purchase, refund, transfer, withdrawal, deposit (lowercase, exact).\n- status: one of pending, completed, failed, cancelled (lowercase, exact).\n- transaction_date: format YYYY-MM-DD.\n\nSELF-CORRECTION LOOP (maximum 4 iterations):\n1. Call validate_transaction with the current transaction.\n2. If the tool reports \"valid\": true, stop — the transaction passed.\n3. If it reports \"valid\": false, inspect each error and reflect:\n   - What failed? Which field caused the failure?\n   - Is a correction SAFE and justified (a normalization / format fix that preserves intent)?\n   - Have you already attempted this exact correction? If so, do NOT repeat it.\n4. Apply ONLY the minimum necessary correction to the offending field(s). Preserve all correct original values.\n5. Re-run validate_transaction on the corrected transaction.\n6. Repeat until the tool reports success OR you reach 4 iterations.\n\nSAFE (allowed) corrections — apply these:\n- Currency case/spacing (e.g. \"usd\" -> \"USD\", \"eur\" -> \"EUR\").\n- Status case/synonyms with an unambiguous mapping (e.g. \"Completed\" -> \"completed\", \"done\" -> \"completed\").\n- Date reformatting when the true date is unambiguous (e.g. \"09/06/2026\" -> \"2026-09-06\").\n\nUNSAFE (forbidden) corrections — NEVER do these; leave the transaction INVALID instead:\n- Inventing a missing customer_id, amount, or any missing required value.\n- Inventing or guessing an amount for a negative/invalid amount.\n- Mapping an unknown transaction_type (e.g. \"quantum_teleport\") to a real type.\nDo not fabricate external information. Do not invent successful validation.\n\nYou must NEVER claim that validation succeeded unless validate_transaction explicitly returned \"valid\": true.\n\nFINAL OUTPUT — return the standardized structured JSON required by the output parser:\n- transaction_id: the transaction id.\n- status: \"VALID\" if the tool's final result was valid, otherwise \"INVALID\".\n- original_transaction: the unchanged original transaction object you received.\n- corrected_transaction: the final transaction object after corrections (equal to the original if none were made).\n- validation_errors: array of the remaining validation error strings from the final tool call (empty if valid).\n- corrections_made: array of human-readable strings describing each correction you applied (empty if none).\n- iterations: the number of times you called validate_transaction.\n- validation_passed: true only if the final tool result was valid, otherwise false.\n\nMaximum self-correction iterations: 4.",
+          "maxIterations": 4,
+          "returnIntermediateSteps": true
+        }
+      },
+      "id": "1527c9e3-f1de-4427-aa90-f1f4de63f8e0",
+      "name": "Transaction Auditor Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        512,
+        112
+      ],
+      "notes": "Self-correcting transaction auditor. Validates via validate_transaction tool, reflects on errors, applies minimal corrections, re-validates, up to 4 iterations. Never claims success without the tool. Returns strict structured JSON."
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 2048,
+          "temperature": 0
+        }
+      },
+      "id": "216899ae-51e1-4cac-9f46-b3486595e3d6",
+      "name": "Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        336
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "GyUgk15GB3craAwS",
+          "name": "Google Gemini API account"
+        }
+      },
+      "notes": "Google Gemini chat model. Temperature 0.0 (deterministic), max output tokens configured."
+    },
+    {
+      "parameters": {
+        "description": "Validates a transaction record against deterministic business rules. Input MUST be the full transaction object as a JSON string. Returns a JSON string: {\"valid\":boolean,\"errors\":[string],\"validated_transaction\":object}. This is the ONLY authority on whether a transaction is valid.",
+        "jsCode": "// Deterministic validation. No network, no LLM.\nlet tx;\ntry {\n  tx = typeof query === 'string' ? JSON.parse(query) : query;\n} catch (e) {\n  return JSON.stringify({ valid: false, errors: ['Input is not valid JSON: ' + e.message], validated_transaction: {} });\n}\nif (tx === null || typeof tx !== 'object' || Array.isArray(tx)) {\n  return JSON.stringify({ valid: false, errors: ['Input must be a transaction object'], validated_transaction: {} });\n}\n\nconst errors = [];\nconst validCurrencies = ['USD', 'EUR', 'GBP', 'INR', 'JPY'];\nconst validTypes = ['purchase', 'refund', 'transfer', 'withdrawal', 'deposit'];\nconst validStatuses = ['pending', 'completed', 'failed', 'cancelled'];\nconst requiredFields = ['transaction_id', 'customer_id', 'amount', 'currency', 'transaction_date', 'transaction_type', 'status'];\n\nfor (const f of requiredFields) {\n  if (tx[f] === undefined || tx[f] === null || tx[f] === '') {\n    errors.push('Missing required field: ' + f);\n  }\n}\n\nif (tx.amount !== undefined && tx.amount !== null && tx.amount !== '') {\n  const amt = Number(tx.amount);\n  if (Number.isNaN(amt)) {\n    errors.push('Invalid amount: \"' + tx.amount + '\" is not a number');\n  } else if (amt <= 0) {\n    errors.push('Invalid amount: must be greater than zero (got ' + amt + ')');\n  }\n}\n\nif (tx.currency !== undefined && tx.currency !== null && tx.currency !== '' && !validCurrencies.includes(tx.currency)) {\n  errors.push('Invalid currency: \"' + tx.currency + '\". Allowed: ' + validCurrencies.join(', '));\n}\n\nif (tx.transaction_type !== undefined && tx.transaction_type !== null && tx.transaction_type !== '' && !validTypes.includes(tx.transaction_type)) {\n  errors.push('Invalid transaction_type: \"' + tx.transaction_type + '\". Allowed: ' + validTypes.join(', '));\n}\n\nif (tx.status !== undefined && tx.status !== null && tx.status !== '' && !validStatuses.includes(tx.status)) {\n  errors.push('Invalid transaction status: \"' + tx.status + '\". Allowed: ' + validStatuses.join(', '));\n}\n\nif (tx.transaction_date !== undefined && tx.transaction_date !== null && tx.transaction_date !== '') {\n  const dateRe = /^\\d{4}-\\d{2}-\\d{2}$/;\n  if (!dateRe.test(String(tx.transaction_date))) {\n    errors.push('Invalid date format: \"' + tx.transaction_date + '\". Expected YYYY-MM-DD');\n  } else {\n    const d = new Date(String(tx.transaction_date) + 'T00:00:00Z');\n    if (Number.isNaN(d.getTime())) {\n      errors.push('Invalid date value: \"' + tx.transaction_date + '\"');\n    }\n  }\n}\n\nreturn JSON.stringify({\n  valid: errors.length === 0,\n  errors: errors,\n  validated_transaction: errors.length === 0 ? tx : {},\n});"
+      },
+      "id": "8a1e3c58-203c-46cb-968f-e59c0d0992c6",
+      "name": "validate_transaction",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        576,
+        336
+      ],
+      "notes": "Deterministic validator (no LLM). Checks required fields, amount, currency, date format, transaction type and status. Returns { valid, errors, validated_transaction }."
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"transaction_id\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"VALID\",\"INVALID\"]},\"original_transaction\":{\"type\":\"object\"},\"corrected_transaction\":{\"type\":\"object\"},\"validation_errors\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"corrections_made\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"iterations\":{\"type\":\"number\"},\"validation_passed\":{\"type\":\"boolean\"}},\"required\":[\"transaction_id\",\"status\",\"original_transaction\",\"corrected_transaction\",\"validation_errors\",\"corrections_made\",\"iterations\",\"validation_passed\"]}"
+      },
+      "id": "a4d32f90-2bd9-4ae2-ae9e-eff1c9ffca43",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        704,
+        336
+      ],
+      "notes": "Strict JSON schema for the standardized audit result. additionalProperties = false."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "status-valid",
+              "leftValue": "={{ $json.output.status }}",
+              "rightValue": "VALID",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2d33479f-cf99-40f4-9dbb-d95b7ac25681",
+      "name": "Validation Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        912,
+        112
+      ],
+      "notes": "Routes on the structured status field from the agent output. VALID -> approved output, otherwise -> exception output."
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({\n  transaction_id: $json.output.transaction_id,\n  status: $json.output.status,\n  validation_passed: $json.output.validation_passed,\n  iterations: $json.output.iterations,\n  corrections_made: $json.output.corrections_made,\n  validation_errors: $json.output.validation_errors,\n  corrected_transaction: $json.output.corrected_transaction\n}) }}",
+        "options": {}
+      },
+      "id": "3ee48ca2-98de-4075-b537-9a4a0f771882",
+      "name": "Valid Transaction Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1136,
+        16
+      ],
+      "notes": "Clean approved JSON for transactions that passed validation."
+    },
+    {
+      "parameters": {
+        "amount": 20
+      },
+      "id": "9efecc35-ac9e-4948-b50f-55869736e816",
+      "name": "Rate Limit Pacing",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1360,
+        208
+      ],
+      "webhookId": "3aa41fb7-79f6-4b86-a856-71c181b5ccce",
+      "notes": "Waits between transactions so sequential Gemini calls stay under the free-tier 5 req/min quota."
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({\n  transaction_id: $json.output.transaction_id,\n  status: $json.output.status,\n  validation_passed: $json.output.validation_passed,\n  iterations: $json.output.iterations,\n  corrections_made: $json.output.corrections_made,\n  validation_errors: $json.output.validation_errors,\n  original_transaction: $json.output.original_transaction,\n  corrected_transaction: $json.output.corrected_transaction\n}) }}",
+        "options": {}
+      },
+      "id": "670e016f-c3f2-440f-96e0-6e54dac8c92e",
+      "name": "Invalid Transaction Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1136,
+        208
+      ],
+      "notes": "Exception/review JSON for transactions that failed validation or hit max iterations."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "f7b6097c-def8-49de-85a3-26e5150fc45e",
+      "name": "Process One At A Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        224,
+        304
+      ],
+      "notes": "Batch size 1 so each transaction is audited sequentially. Loops back via the Wait node to pace Gemini calls under the free-tier limit."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Run Audit": {
+      "main": [
+        [
+          {
+            "node": "Mock Transaction Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Transaction Data": {
+      "main": [
+        [
+          {
+            "node": "Process One At A Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transaction Auditor Agent": {
+      "main": [
+        [
+          {
+            "node": "Validation Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Transaction Auditor Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "validate_transaction": {
+      "ai_tool": [
+        [
+          {
+            "node": "Transaction Auditor Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Transaction Auditor Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Router": {
+      "main": [
+        [
+          {
+            "node": "Valid Transaction Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid Transaction Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Transaction Output": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Pacing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Pacing": {
+      "main": [
+        [
+          {
+            "node": "Process One At A Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invalid Transaction Output": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Pacing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process One At A Time": {
+      "main": [
+        [
+          {
+            "node": "All Transactions Audited",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transaction Auditor Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "0315e9b1-0b85-4bee-9a7d-f2cd7256af62",
+  "meta": {
+    "instanceId": "6abe9931809978352319cb21622ffdff38accce530bfc6c488633e9f18461d78"
+  },
+  "nodeGroups": [
+    {
+      "id": "b06fc447-373c-4d50-b261-bae0a2c1e706",
+      "name": "Mock Transaction Data",
+      "nodeIds": [
+        "0cd449f7-9561-461c-a93c-c156be9ed3b9"
+      ],
+      "description": "Deterministic mock transactions (valid, correctable, and uncorrectable) for the LMS demo."
+    }
+  ],
+  "id": "cPkBcegyFKDxHxdj",
+  "tags": []
+}
