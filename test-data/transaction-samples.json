@@ -1,0 +1,10 @@
+[
+  {"transaction_id":"TXN-001","customer_id":"CUST-1001","amount":250.00,"currency":"USD","transaction_date":"2026-09-01","transaction_type":"purchase","status":"completed"},
+  {"transaction_id":"TXN-002","amount":99.99,"currency":"EUR","transaction_date":"2026-09-02","transaction_type":"refund","status":"pending"},
+  {"transaction_id":"TXN-003","customer_id":"CUST-1003","amount":40.50,"currency":"usd","transaction_date":"2026-09-03","transaction_type":"purchase","status":"completed"},
+  {"transaction_id":"TXN-004","customer_id":"CUST-1004","amount":-75.00,"currency":"GBP","transaction_date":"2026-09-04","transaction_type":"withdrawal","status":"completed"},
+  {"transaction_id":"TXN-005","customer_id":"CUST-1005","amount":500.00,"currency":"INR","transaction_date":"2026-09-05","transaction_type":"transfer","status":"done"},
+  {"transaction_id":"TXN-006","customer_id":"CUST-1006","amount":12.00,"currency":"JPY","transaction_date":"09/06/2026","transaction_type":"deposit","status":"pending"},
+  {"transaction_id":"TXN-007","customer_id":"CUST-1007","amount":320.00,"currency":"eur","transaction_date":"2026-09-07","transaction_type":"purchase","status":"Completed"},
+  {"transaction_id":"TXN-008","customer_id":"CUST-1008","currency":"USD","transaction_date":"2026-09-08","transaction_type":"quantum_teleport","status":"completed"}
+]
